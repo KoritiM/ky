@@ -1,15 +1,60 @@
+import argparse
+import os
+from pathlib import Path
 import tkinter as tk
 from tkinter import scrolledtext, Entry, Frame, Label
 import re
 import sys
 
+def parse_command_line_args():
+    """Парсинг аргументов командной строки"""
+    parser = argparse.ArgumentParser(description='VFS Emulator')
+    parser.add_argument('--vfs-path', required=True, help='Путь к физическому расположению VFS')
+    parser.add_argument('--script', help='Путь к стартовому скрипту')
+    return parser.parse_args()
+
+def execute_startup_script(vfs, script_path):
+    """Выполняет стартовый скрипт с отладочным выводом"""
+    script_file = Path(script_path)
+    
+    if not script_file.exists():
+        return f"Ошибка: Скрипт {script_path} не найден\n"
+    
+    output = []
+    output.append(f"=== Выполнение стартового скрипта: {script_path} ===\n")
+    
+    with open(script_path, 'r', encoding='utf-8') as file:
+        for line_num, line in enumerate(file, 1):
+            command = line.strip()
+            if command and not command.startswith('#'):  # Пропускаем пустые строки и комментарии
+                output.append(f"[Скрипт строка {line_num}] > {command}\n")
+                result = vfs.execute_command(command)
+                if result and result != "EXIT":
+                    output.append(result)
+                elif result == "EXIT":
+                    output.append("Завершение работы по скрипту\n")
+                    break
+                output.append("\n")  # Пустая строка для разделения
+    
+    return "".join(output)
+
 class VFSEmulator:
-    def __init__(self):
+    def __init__(self, vfs_path=None):
         self.current_dir = "/home/user"
+        self.vfs_path = Path(vfs_path) if vfs_path else None
+        if self.vfs_path:
+            self.vfs_path.mkdir(parents=True, exist_ok=True)
+        
         self.commands = {
             "ls": self.ls_command,
             "cd": self.cd_command,
-            "exit": self.exit_command
+            "exit": self.exit_command,
+            "pwd": self.pwd_command,
+            "mkdir": self.mkdir_command,
+            "touch": self.touch_command,
+            "echo": self.echo_command,
+            "cat": self.cat_command,
+            "help": self.help_command
         }
     
     def parse_arguments(self, command_line):
@@ -45,6 +90,57 @@ class VFSEmulator:
     def ls_command(self, args):
         """Заглушка команды ls"""
         return f"ls: аргументы {args} (текущая директория: {self.current_dir})\n"
+
+        def pwd_command(self, args):
+    """Команда pwd"""
+    return f"{self.current_dir}\n"
+
+def mkdir_command(self, args):
+    """Команда mkdir"""
+    if len(args) == 0:
+        return "mkdir: отсутствует операнд\n"
+    
+    dir_name = args[0]
+    # Здесь должна быть логика создания реальной директории в VFS
+    return f"mkdir: создана директория '{dir_name}'\n"
+
+def touch_command(self, args):
+    """Команда touch"""
+    if len(args) == 0:
+        return "touch: отсутствует операнд\n"
+    
+    file_name = args[0]
+    # Здесь должна быть логика создания реального файла в VFS
+    return f"touch: создан файл '{file_name}'\n"
+
+def echo_command(self, args):
+    """Команда echo"""
+    return " ".join(args) + "\n"
+
+def cat_command(self, args):
+    """Команда cat"""
+    if len(args) == 0:
+        return "cat: отсутствует операнд\n"
+    
+    file_name = args[0]
+    # Здесь должна быть логика чтения реального файла из VFS
+    return f"cat: содержимое файла '{file_name}'\n"
+
+def help_command(self, args):
+    """Команда help"""
+    help_text = """
+Доступные команды:
+- ls - список файлов и директорий
+- cd [путь] - сменить директорию  
+- pwd - текущая директория
+- mkdir [имя] - создать директорию
+- touch [имя] - создать файл
+- echo [текст] - вывести текст
+- cat [имя] - прочитать файл
+- help - справка
+- exit - выход
+"""
+    return help_text
     
     def cd_command(self, args):
         """Заглушка команды cd"""
@@ -74,13 +170,14 @@ class VFSEmulator:
         return "EXIT"
 
 class VFSGUI:
-    def __init__(self, root):
+    def __init__(self, root, vfs_path=None, script_path=None):
         self.root = root
         self.root.title("VFS - Virtual File System Emulator")
         self.root.geometry("800x600")
         self.root.configure(bg='black')
         
-        self.vfs = VFSEmulator()
+        self.vfs = VFSEmulator(vfs_path)
+        self.script_path = script_path
         
         # Создание интерфейса
         self.create_widgets()
@@ -88,8 +185,14 @@ class VFSGUI:
         # Фокус на поле ввода
         self.entry.focus_set()
         
-        # Приветственное сообщение
-        self.display_welcome()
+        # Отладочный вывод параметров
+        self.display_configuration(vfs_path, script_path)
+        
+        # Выполнение стартового скрипта если указан
+        if script_path:
+            self.execute_startup_script()
+        else:
+            self.display_welcome()
     
     def create_widgets(self):
         """Создание элементов интерфейса"""
@@ -140,11 +243,11 @@ class VFSGUI:
     def display_welcome(self):
         """Отображение приветственного сообщения"""
         welcome_msg = """Добро пожаловать в VFS Emulator v1.0
-Доступные команды: ls, cd, exit
+        Доступные команды: ls, cd, exit
 
-Для справки по конкретной команде используйте: команда --help
+        Для справки по конкретной команде используйте: команда --help
 
-"""
+        """
         self.display_output(welcome_msg)
         self.update_prompt()
     
@@ -202,9 +305,27 @@ class VFSGUI:
             self.history_index = len(self.command_history)
             self.entry.delete(0, tk.END)
 
+    def display_configuration(self, vfs_path, script_path):
+        """Отладочный вывод конфигурации"""
+        config_msg = f"""=== Конфигурация эмулятора VFS ===Путь к VFS: {vfs_path}
+        Стартовый скрипт: {script_path if script_path else 'Не указан'}
+        {"=" * 40}
+        """
+    self.display_output(config_msg)
+
+def execute_startup_script(self):
+    """Выполнение стартового скрипта"""
+    if self.script_path:
+        result = execute_startup_script(self.vfs, self.script_path)
+        self.display_output(result)
+        self.update_prompt()
+
 def main():
+    # Парсинг аргументов командной строки
+    args = parse_command_line_args()
+    
     root = tk.Tk()
-    app = VFSGUI(root)
+    app = VFSGUI(root, args.vfs_path, args.script)
     root.mainloop()
 
 if __name__ == "__main__":
