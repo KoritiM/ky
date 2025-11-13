@@ -1,7 +1,11 @@
 import argparse
 import sys
 import os
-
+import requests
+import gzip
+import io
+from urllib.parse import urljoin
+import xml.etree.ElementTree as ET
 
 class Config:
     """Класс для хранения конфигурации приложения"""
@@ -216,7 +220,189 @@ def main():
     except Exception as e:
         print(f"Неожиданная ошибка: {e}", file=sys.stderr)
         sys.exit(1)
+def fetch_apk_index(repo_url, arch="x86_64", branch="v3.20", repo="main"):
+    """
+    Загрузка и парсинг APKINDEX для Alpine Linux репозитория
+    """
+    # Формируем URL к APKINDEX
+    if repo_url.endswith('/'):
+        repo_url = repo_url[:-1]
+    
+    apkindex_url = f"{repo_url}/{branch}/{repo}/{arch}/APKINDEX.tar.gz"
+    
+    try:
+        print(f"Загрузка APKINDEX из: {apkindex_url}")
+        response = requests.get(apkindex_url, timeout=30)
+        response.raise_for_status()
+        
+        # Распаковка и чтение gzip архива
+        with gzip.open(io.BytesIO(response.content), 'rt', encoding='utf-8', errors='ignore') as f:
+            return f.read()
+            
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Ошибка при загрузке APKINDEX: {e}")
 
 
+def parse_apkindex_content(content):
+    """
+    Парсинг содержимого APKINDEX и извлечение информации о пакетах
+    """
+    packages = {}
+    current_pkg = {}
+    
+    for line in content.split('\n'):
+        if not line.strip():
+            if current_pkg and 'P' in current_pkg:
+                pkg_name = current_pkg['P']
+                packages[pkg_name] = current_pkg.copy()
+            current_pkg = {}
+            continue
+            
+        if ':' in line:
+            key, value = line.split(':', 1)
+            current_pkg[key] = value
+    
+    # Добавляем последний пакет
+    if current_pkg and 'P' in current_pkg:
+        pkg_name = current_pkg['P']
+        packages[pkg_name] = current_pkg
+    
+    return packages
+
+
+def get_package_dependencies(package_name, package_version, packages_data):
+    """
+    Получение прямых зависимостей для указанного пакета и версии
+    """
+    # Поиск пакета
+    target_package = None
+    
+    for pkg_name, pkg_info in packages_data.items():
+        if pkg_name == package_name:
+            if not package_version or package_version == pkg_info.get('V', '').split('-')[0]:
+                target_package = pkg_info
+                break
+    
+    if not target_package:
+        raise Exception(f"Пакет '{package_name}' (версия: {package_version or 'любая'}) не найден в репозитории")
+    
+    # Извлечение зависимостей
+    dependencies_str = target_package.get('D', '')
+    if not dependencies_str:
+        return []
+    
+    # Парсинг зависимостей (формат: dep1 dep2 dep3)
+    dependencies = []
+    for dep in dependencies_str.split():
+        # Убираем версии из зависимостей (формат: so:libc.musl-x86_64.so.1)
+        if dep.startswith('so:'):
+            continue
+        # Убираем версии (формат: pkgname>=1.2.3)
+        dep_name = dep.split('>')[0].split('<')[0].split('=')[0]
+        if dep_name and dep_name not in dependencies:
+            dependencies.append(dep_name)
+    
+    return dependencies
+
+
+def print_dependencies(package_name, dependencies, version=None):
+    """
+    Вывод прямых зависимостей на экран
+    """
+    print("\n" + "=" * 60)
+    print(f"ПРЯМЫЕ ЗАВИСИМОСТИ ПАКЕТА: {package_name}")
+    if version:
+        print(f"ВЕРСИЯ: {version}")
+    print("=" * 60)
+    
+    if not dependencies:
+        print("Прямые зависимости не найдены")
+        return
+    
+    print(f"Найдено зависимостей: {len(dependencies)}")
+    print("\nСписок прямых зависимостей:")
+    
+    for i, dep in enumerate(sorted(dependencies), 1):
+        print(f"  {i:2d}. {dep}")
+    
+    print("=" * 60)
+
+
+def analyze_alpine_dependencies(config):
+    """
+    Основная функция анализа зависимостей для Alpine Linux
+    """
+    try:
+        # Загрузка и парсинг APKINDEX
+        print("Загрузка информации о пакетах из репозитория Alpine...")
+        apkindex_content = fetch_apk_index(config.repository_url)
+        packages_data = parse_apkindex_content(apkindex_content)
+        
+        print(f"Загружено информации о {len(packages_data)} пакетах")
+        
+        # Получение зависимостей
+        dependencies = get_package_dependencies(
+            config.package_name, 
+            config.package_version, 
+            packages_data
+        )
+        
+        # Вывод результатов
+        print_dependencies(config.package_name, dependencies, config.package_version)
+        
+        return dependencies
+        
+    except Exception as e:
+        print(f"Ошибка при анализе зависимостей: {e}", file=sys.stderr)
+        return None
+
+def main():
+    """Основная функция приложения"""
+    try:
+        # Парсинг аргументов
+        args = parse_arguments()
+        
+        # Создание конфигурации
+        config = Config()
+        config.package_name = args.package_name
+        config.repository_url = args.repository_url
+        config.test_repo_mode = args.test_repo_mode
+        config.package_version = args.package_version
+        config.tree_output = args.tree_output
+        config.filter_substring = args.filter_substring
+        
+        # Валидация конфигурации
+        validation_errors = validate_config(config)
+        
+        if validation_errors:
+            print("ОШИБКИ ВАЛИДАЦИИ:", file=sys.stderr)
+            for error in validation_errors:
+                print(f"  - {error}", file=sys.stderr)
+            sys.exit(1)
+        
+        # Вывод конфигурации (требование №3)
+        print_config(config)
+        
+        # Анализ зависимостей Alpine Linux
+        print("\nНачало анализа зависимостей...")
+        dependencies = analyze_alpine_dependencies(config)
+        
+        if dependencies is not None:
+            print("\nАнализ зависимостей завершен успешно!")
+        else:
+            print("\nАнализ зависимостей завершен с ошибками!", file=sys.stderr)
+            sys.exit(1)
+        
+    except argparse.ArgumentError as e:
+        print(f"Ошибка в аргументах командной строки: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nПриложение прервано пользователем", file=sys.stderr)
+        sys.exit(130)
+    except Exception as e:
+        print(f"Неожиданная ошибка: {e}", file=sys.stderr)
+        sys.exit(1)
+        
 if __name__ == "__main__":
     main()
+
