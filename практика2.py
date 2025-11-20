@@ -1,408 +1,702 @@
 import argparse
 import sys
 import os
-import requests
+from typing import Dict, Any, List, Optional
+from typing import Dict, List, Set, Tuple
+from collections import deque
+import re
+import urllib.request
+import urllib.error
+from typing import Dict, List, Set
+from xml.etree import ElementTree as ET
 import gzip
-import io
-from urllib.parse import urljoin
-import xml.etree.ElementTree as ET
+import tempfile
+import os
 
-class Config:
-    """Класс для хранения конфигурации приложения"""
-    
+class DependencyVisualizer:
     def __init__(self):
-        self.package_name = None
-        self.repository_url = None
-        self.test_repo_mode = False
-        self.package_version = None
-        self.tree_output = False
-        self.filter_substring = None
-
-
-def validate_package_name(name):
-    """Валидация имени пакета"""
-    if not name:
-        raise ValueError("Имя пакета не может быть пустым")
-    if not name.replace('-', '').replace('_', '').replace('.', '').isalnum():
-        raise ValueError("Имя пакета содержит недопустимые символы")
-    return name
-
-
-def validate_repository_url(url):
-    """Валидация URL репозитория или пути к файлу"""
-    if not url:
-        raise ValueError("URL или путь к репозиторию не может быть пустым")
-    
-    # Проверка, является ли это путем к файлу
-    if os.path.exists(url):
-        if not os.path.isfile(url):
-            raise ValueError(f"Путь '{url}' не является файлом")
-        return url
-    
-    # Базовая проверка URL (можно расширить)
-    if not (url.startswith('http://') or url.startswith('https://') or 
-            url.startswith('git://') or url.startswith('file://')):
-        raise ValueError(f"Некорректный формат URL: {url}")
-    
-    return url
-
-
-def validate_version(version):
-    """Валидация версии пакета"""
-    if not version:
-        return None
-    
-    # Простая проверка формата версии (можно расширить)
-    version_parts = version.split('.')
-    for part in version_parts:
-        if not part.isdigit() and part != '*':
-            raise ValueError(f"Некорректный формат версии: {version}")
-    
-    return version
-
-
-def validate_filter_substring(substring):
-    """Валидация подстроки для фильтрации"""
-    if substring is None:
-        return None
-    
-    if not substring.strip():
-        raise ValueError("Подстрока для фильтрации не может быть пустой или состоять только из пробелов")
-    
-    return substring.strip()
-
-
-def parse_arguments():
-    """Парсинг аргументов командной строки"""
-    parser = argparse.ArgumentParser(
-        description='Анализатор зависимостей пакетов',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Примеры использования:
-  %(prog)s --package requests --url https://github.com/psf/requests
-  %(prog)s -p numpy -u /path/to/repo --tree --filter "test"
-  %(prog)s --package django --version 4.2 --test-mode
-        """
-    )
-    
-    # Обязательные параметры
-    parser.add_argument(
-        '-p', '--package',
-        dest='package_name',
-        required=True,
-        help='Имя анализируемого пакета (обязательный параметр)'
-    )
-    
-    parser.add_argument(
-        '-u', '--url',
-        dest='repository_url',
-        required=True,
-        help='URL репозитория или путь к файлу тестового репозитория (обязательный параметр)'
-    )
-    
-    # Опциональные параметры
-    parser.add_argument(
-        '-t', '--test-mode',
-        dest='test_repo_mode',
-        action='store_true',
-        default=False,
-        help='Режим работы с тестовым репозиторием'
-    )
-    
-    parser.add_argument(
-        '-v', '--version',
-        dest='package_version',
-        help='Версия пакета (формат: X.Y.Z или X.Y.*)'
-    )
-    
-    parser.add_argument(
-        '--tree',
-        dest='tree_output',
-        action='store_true',
-        default=False,
-        help='Режим вывода зависимостей в формате ASCII-дерева'
-    )
-    
-    parser.add_argument(
-        '-f', '--filter',
-        dest='filter_substring',
-        help='Подстрока для фильтрации пакетов'
-    )
-    
-    return parser.parse_args()
-
-
-def validate_config(config):
-    """Полная валидация конфигурации"""
-    errors = []
-    
-    try:
-        validate_package_name(config.package_name)
-    except ValueError as e:
-        errors.append(f"Ошибка в имени пакета: {e}")
-    
-    try:
-        validate_repository_url(config.repository_url)
-    except ValueError as e:
-        errors.append(f"Ошибка в URL/пути репозитория: {e}")
-    
-    try:
-        validate_version(config.package_version)
-    except ValueError as e:
-        errors.append(f"Ошибка в версии пакета: {e}")
-    
-    try:
-        validate_filter_substring(config.filter_substring)
-    except ValueError as e:
-        errors.append(f"Ошибка в подстроке фильтра: {e}")
-    
-    return errors
-
-
-def print_config(config):
-    """Вывод конфигурации в формате ключ-значение"""
-    print("=" * 50)
-    print("ТЕКУЩАЯ КОНФИГУРАЦИЯ ПРИЛОЖЕНИЯ")
-    print("=" * 50)
-    
-    config_data = {
-        "Имя пакета": config.package_name,
-        "URL/путь репозитория": config.repository_url,
-        "Режим тестового репозитория": "ВКЛ" if config.test_repo_mode else "ВЫКЛ",
-        "Версия пакета": config.package_version or "Не указана",
-        "Режим дерева зависимостей": "ВКЛ" if config.tree_output else "ВЫКЛ",
-        "Подстрока для фильтрации": config.filter_substring or "Не указана"
-    }
-    
-    for key, value in config_data.items():
-        print(f"{key:<30}: {value}")
-    
-    print("=" * 50)
-
-
-def main():
-    """Основная функция приложения"""
-    try:
-        # Парсинг аргументов
-        args = parse_arguments()
+        self.config = {}
         
-        # Создание конфигурации
-        config = Config()
-        config.package_name = args.package_name
-        config.repository_url = args.repository_url
-        config.test_repo_mode = args.test_repo_mode
-        config.package_version = args.package_version
-        config.tree_output = args.tree_output
-        config.filter_substring = args.filter_substring
-        
-        # Валидация конфигурации
-        validation_errors = validate_config(config)
-        
-        if validation_errors:
-            print("ОШИБКИ ВАЛИДАЦИИ:", file=sys.stderr)
-            for error in validation_errors:
-                print(f"  - {error}", file=sys.stderr)
-            sys.exit(1)
-        
-        # Вывод конфигурации (требование №3)
-        print_config(config)
-        
-        # Здесь будет основная логика приложения
-        print("\nПриложение успешно запущено с указанной конфигурацией!")
-        print("В реальном приложении здесь будет анализ зависимостей...")
-        
-    except argparse.ArgumentError as e:
-        print(f"Ошибка в аргументах командной строки: {e}", file=sys.stderr)
-        sys.exit(1)
-    except KeyboardInterrupt:
-        print("\nПриложение прервано пользователем", file=sys.stderr)
-        sys.exit(130)
-    except Exception as e:
-        print(f"Неожиданная ошибка: {e}", file=sys.stderr)
-        sys.exit(1)
-def fetch_apk_index(repo_url, arch="x86_64", branch="v3.20", repo="main"):
-    """
-    Загрузка и парсинг APKINDEX для Alpine Linux репозитория
-    """
-    # Формируем URL к APKINDEX
-    if repo_url.endswith('/'):
-        repo_url = repo_url[:-1]
-    
-    apkindex_url = f"{repo_url}/{branch}/{repo}/{arch}/APKINDEX.tar.gz"
-    
-    try:
-        print(f"Загрузка APKINDEX из: {apkindex_url}")
-        response = requests.get(apkindex_url, timeout=30)
-        response.raise_for_status()
-        
-        # Распаковка и чтение gzip архива
-        with gzip.open(io.BytesIO(response.content), 'rt', encoding='utf-8', errors='ignore') as f:
-            return f.read()
-            
-    except requests.exceptions.RequestException as e:
-        raise Exception(f"Ошибка при загрузке APKINDEX: {e}")
-
-
-def parse_apkindex_content(content):
-    """
-    Парсинг содержимого APKINDEX и извлечение информации о пакетах
-    """
-    packages = {}
-    current_pkg = {}
-    
-    for line in content.split('\n'):
-        if not line.strip():
-            if current_pkg and 'P' in current_pkg:
-                pkg_name = current_pkg['P']
-                packages[pkg_name] = current_pkg.copy()
-            current_pkg = {}
-            continue
-            
-        if ':' in line:
-            key, value = line.split(':', 1)
-            current_pkg[key] = value
-    
-    # Добавляем последний пакет
-    if current_pkg and 'P' in current_pkg:
-        pkg_name = current_pkg['P']
-        packages[pkg_name] = current_pkg
-    
-    return packages
-
-
-def get_package_dependencies(package_name, package_version, packages_data):
-    """
-    Получение прямых зависимостей для указанного пакета и версии
-    """
-    # Поиск пакета
-    target_package = None
-    
-    for pkg_name, pkg_info in packages_data.items():
-        if pkg_name == package_name:
-            if not package_version or package_version == pkg_info.get('V', '').split('-')[0]:
-                target_package = pkg_info
-                break
-    
-    if not target_package:
-        raise Exception(f"Пакет '{package_name}' (версия: {package_version or 'любая'}) не найден в репозитории")
-    
-    # Извлечение зависимостей
-    dependencies_str = target_package.get('D', '')
-    if not dependencies_str:
-        return []
-    
-    # Парсинг зависимостей (формат: dep1 dep2 dep3)
-    dependencies = []
-    for dep in dependencies_str.split():
-        # Убираем версии из зависимостей (формат: so:libc.musl-x86_64.so.1)
-        if dep.startswith('so:'):
-            continue
-        # Убираем версии (формат: pkgname>=1.2.3)
-        dep_name = dep.split('>')[0].split('<')[0].split('=')[0]
-        if dep_name and dep_name not in dependencies:
-            dependencies.append(dep_name)
-    
-    return dependencies
-
-
-def print_dependencies(package_name, dependencies, version=None):
-    """
-    Вывод прямых зависимостей на экран
-    """
-    print("\n" + "=" * 60)
-    print(f"ПРЯМЫЕ ЗАВИСИМОСТИ ПАКЕТА: {package_name}")
-    if version:
-        print(f"ВЕРСИЯ: {version}")
-    print("=" * 60)
-    
-    if not dependencies:
-        print("Прямые зависимости не найдены")
-        return
-    
-    print(f"Найдено зависимостей: {len(dependencies)}")
-    print("\nСписок прямых зависимостей:")
-    
-    for i, dep in enumerate(sorted(dependencies), 1):
-        print(f"  {i:2d}. {dep}")
-    
-    print("=" * 60)
-
-
-def analyze_alpine_dependencies(config):
-    """
-    Основная функция анализа зависимостей для Alpine Linux
-    """
-    try:
-        # Загрузка и парсинг APKINDEX
-        print("Загрузка информации о пакетах из репозитория Alpine...")
-        apkindex_content = fetch_apk_index(config.repository_url)
-        packages_data = parse_apkindex_content(apkindex_content)
-        
-        print(f"Загружено информации о {len(packages_data)} пакетах")
-        
-        # Получение зависимостей
-        dependencies = get_package_dependencies(
-            config.package_name, 
-            config.package_version, 
-            packages_data
+    def parse_arguments(self) -> Dict[str, Any]:
+        """Парсинг аргументов командной строки"""
+        parser = argparse.ArgumentParser(
+            description='Визуализатор графа зависимостей пакетов Alpine Linux',
+            formatter_class=argparse.RawDescriptionHelpFormatter
         )
         
-        # Вывод результатов
-        print_dependencies(config.package_name, dependencies, config.package_version)
+        parser.add_argument(
+            '--package',
+            type=str,
+            required=True,
+            help='Имя анализируемого пакета'
+        )
         
-        return dependencies
+        parser.add_argument(
+            '--repository',
+            type=str,
+            required=True,
+            help='URL-адрес репозитория или путь к файлу тестового репозитория'
+        )
         
-    except Exception as e:
-        print(f"Ошибка при анализе зависимостей: {e}", file=sys.stderr)
-        return None
+        parser.add_argument(
+            '--test-mode',
+            action='store_true',
+            help='Режим работы с тестовым репозиторием'
+        )
+        
+        parser.add_argument(
+            '--version',
+            type=str,
+            default='latest',
+            help='Версия пакета (по умолчанию: latest)'
+        )
+        
+        parser.add_argument(
+            '--ascii-tree',
+            action='store_true',
+            help='Режим вывода зависимостей в формате ASCII-дерева'
+        )
+        
+        parser.add_argument(
+            '--filter',
+            type=str,
+            default='',
+            help='Подстрока для фильтрации пакетов'
+        )
+        
+        try:
+            args = parser.parse_args()
+            return vars(args)
+        except SystemExit:
+            # Обработка ошибок парсинга аргументов
+            print("Ошибка: Неправильные аргументы командной строки")
+            sys.exit(1)
+    
+    def validate_config(self, config: Dict[str, Any]) -> bool:
+        """Валидация конфигурации"""
+        errors = []
+        
+        # Проверка имени пакета
+        if not config['package'] or not isinstance(config['package'], str):
+            errors.append("Имя пакета должно быть непустой строкой")
+        
+        # Проверка репозитория
+        if not config['repository']:
+            errors.append("Репозиторий должен быть указан")
+        elif config['test_mode']:
+            # Проверка существования файла для тестового режима
+            if not os.path.exists(config['repository']):
+                errors.append(f"Файл репозитория не найден: {config['repository']}")
+        
+        # Проверка версии
+        if config['version'] and not isinstance(config['version'], str):
+            errors.append("Версия должна быть строкой")
+        
+        # Проверка фильтра
+        if config['filter'] is not None and not isinstance(config['filter'], str):
+            errors.append("Фильтр должен быть строкой")
+        
+        if errors:
+            print("Ошибки валидации конфигурации:")
+            for error in errors:
+                print(f"  - {error}")
+            return False
+        
+        return True
+    
+    def print_config(self, config: Dict[str, Any]):
+        """Вывод конфигурации в формате ключ-значение"""
+        print("Конфигурация приложения:")
+        print("-" * 30)
+        for key, value in config.items():
+            print(f"{key}: {value}")
+        print("-" * 30)
+    
+    def run_stage1(self):
+        """Запуск первого этапа"""
+        print("=== Этап 1: Минимальный прототип с конфигурацией ===")
+        
+        try:
+            # Парсинг аргументов
+            config = self.parse_arguments()
+            
+            # Валидация конфигурации
+            if not self.validate_config(config):
+                sys.exit(1)
+            
+            # Сохранение конфигурации
+            self.config = config
+            
+            # Вывод конфигурации
+            self.print_config(config)
+            
+            print("Этап 1 выполнен успешно!")
+            
+        except Exception as e:
+            print(f"Критическая ошибка: {e}")
+            sys.exit(1)
 
 def main():
-    """Основная функция приложения"""
-    try:
-        # Парсинг аргументов
-        args = parse_arguments()
+    visualizer = DependencyVisualizer()
+    visualizer.run_stage1()
+
+if __name__ == "__main__":
+    main()
+
+
+class DependencyCollector:
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.dependencies_cache = {}
+    
+    def fetch_repository_data(self) -> str:
+        """Получение данных из репозитория"""
+        repository = self.config['repository']
         
-        # Создание конфигурации
-        config = Config()
-        config.package_name = args.package_name
-        config.repository_url = args.repository_url
-        config.test_repo_mode = args.test_repo_mode
-        config.package_version = args.package_version
-        config.tree_output = args.tree_output
-        config.filter_substring = args.filter_substring
-        
-        # Валидация конфигурации
-        validation_errors = validate_config(config)
-        
-        if validation_errors:
-            print("ОШИБКИ ВАЛИДАЦИИ:", file=sys.stderr)
-            for error in validation_errors:
-                print(f"  - {error}", file=sys.stderr)
-            sys.exit(1)
-        
-        # Вывод конфигурации (требование №3)
-        print_config(config)
-        
-        # Анализ зависимостей Alpine Linux
-        print("\nНачало анализа зависимостей...")
-        dependencies = analyze_alpine_dependencies(config)
-        
-        if dependencies is not None:
-            print("\nАнализ зависимостей завершен успешно!")
+        if self.config['test_mode']:
+            # Работа с локальным файлом
+            try:
+                with open(repository, 'r', encoding='utf-8') as f:
+                    return f.read()
+            except Exception as e:
+                raise Exception(f"Ошибка чтения файла репозитория: {e}")
         else:
-            print("\nАнализ зависимостей завершен с ошибками!", file=sys.stderr)
+            # Работа с URL
+            try:
+                with urllib.request.urlopen(repository) as response:
+                    content = response.read()
+                    
+                    # Обработка gzip сжатия
+                    if repository.endswith('.gz'):
+                        with gzip.open(tempfile.TemporaryFile(), 'w') as f:
+                            f.write(content)
+                            f.seek(0)
+                            return f.read().decode('utf-8')
+                    else:
+                        return content.decode('utf-8')
+                        
+            except urllib.error.URLError as e:
+                raise Exception(f"Ошибка доступа к репозиторию: {e}")
+            except Exception as e:
+                raise Exception(f"Ошибка обработки данных репозитория: {e}")
+    
+    def parse_apkindex(self, content: str) -> Dict[str, Dict]:
+        """Парсинг APKINDEX"""
+        packages = {}
+        current_package = None
+        
+        for line in content.split('\n'):
+            line = line.strip()
+            
+            if line.startswith('P:'):
+                # Начало нового пакета
+                if current_package:
+                    packages[current_package['name']] = current_package
+                current_package = {'name': line[2:], 'dependencies': [], 'version': ''}
+            
+            elif line.startswith('V:') and current_package:
+                current_package['version'] = line[2:]
+            
+            elif line.startswith('D:') and current_package:
+                # Зависимости
+                deps = line[2:].split()
+                for dep in deps:
+                    if dep and dep != 'so:':
+                        # Убираем версии из зависимостей
+                        clean_dep = re.sub(r'[<=>].*', '', dep)
+                        if clean_dep and clean_dep not in current_package['dependencies']:
+                            current_package['dependencies'].append(clean_dep)
+        
+        # Добавляем последний пакет
+        if current_package:
+            packages[current_package['name']] = current_package
+        
+        return packages
+    
+    def get_package_dependencies(self, package_name: str, version: str = 'latest') -> List[str]:
+        """Получение зависимостей для конкретного пакета"""
+        cache_key = f"{package_name}_{version}"
+        if cache_key in self.dependencies_cache:
+            return self.dependencies_cache[cache_key]
+        
+        try:
+            # Получаем данные репозитория
+            repo_data = self.fetch_repository_data()
+            packages = self.parse_apkindex(repo_data)
+            
+            # Ищем нужный пакет
+            target_package = None
+            for pkg_name, pkg_info in packages.items():
+                if pkg_name == package_name:
+                    if version == 'latest' or pkg_info['version'] == version:
+                        target_package = pkg_info
+                        break
+            
+            if not target_package:
+                raise Exception(f"Пакет {package_name} версии {version} не найден")
+            
+            # Применяем фильтр если задан
+            dependencies = target_package['dependencies']
+            if self.config['filter']:
+                dependencies = [dep for dep in dependencies 
+                              if self.config['filter'] in dep]
+            
+            self.dependencies_cache[cache_key] = dependencies
+            return dependencies
+            
+        except Exception as e:
+            raise Exception(f"Ошибка получения зависимостей: {e}")
+    
+    def run_stage2(self):
+        """Запуск второго этапа"""
+        print("\n=== Этап 2: Сбор данных ===")
+        
+        try:
+            package_name = self.config['package']
+            version = self.config['version']
+            
+            print(f"Получение зависимостей для пакета: {package_name} версии {version}")
+            
+            dependencies = self.get_package_dependencies(package_name, version)
+            
+            print(f"\nПрямые зависимости пакета {package_name}:")
+            print("-" * 40)
+            for dep in dependencies:
+                print(f"  - {dep}")
+            print("-" * 40)
+            
+            print(f"Всего зависимостей: {len(dependencies)}")
+            
+        except Exception as e:
+            print(f"Ошибка на этапе 2: {e}")
             sys.exit(1)
+
+# Обновленный основной класс
+class DependencyVisualizer:
+    def __init__(self):
+        self.config = {}
         
-    except argparse.ArgumentError as e:
-        print(f"Ошибка в аргументах командной строки: {e}", file=sys.stderr)
-        sys.exit(1)
-    except KeyboardInterrupt:
-        print("\nПриложение прервано пользователем", file=sys.stderr)
-        sys.exit(130)
-    except Exception as e:
-        print(f"Неожиданная ошибка: {e}", file=sys.stderr)
-        sys.exit(1)
+    def parse_arguments(self) -> Dict[str, Any]:
+        """Парсинг аргументов командной строки"""
+        parser = argparse.ArgumentParser(
+            description='Визуализатор графа зависимостей пакетов Alpine Linux',
+            formatter_class=argparse.RawDescriptionHelpFormatter
+        )
         
+        parser.add_argument(
+            '--package',
+            type=str,
+            required=True,
+            help='Имя анализируемого пакета'
+        )
+        
+        parser.add_argument(
+            '--repository',
+            type=str,
+            required=True,
+            help='URL-адрес репозитория или путь к файлу тестового репозитория'
+        )
+        
+        parser.add_argument(
+            '--test-mode',
+            action='store_true',
+            help='Режим работы с тестового репозитория'
+        )
+        
+        parser.add_argument(
+            '--version',
+            type=str,
+            default='latest',
+            help='Версия пакета (по умолчанию: latest)'
+        )
+        
+        parser.add_argument(
+            '--ascii-tree',
+            action='store_true',
+            help='Режим вывода зависимостей в формате ASCII-дерева'
+        )
+        
+        parser.add_argument(
+            '--filter',
+            type=str,
+            default='',
+            help='Подстрока для фильтрации пакетов'
+        )
+        
+        try:
+            args = parser.parse_args()
+            return vars(args)
+        except SystemExit:
+            print("Ошибка: Неправильные аргументы командной строки")
+            sys.exit(1)
+    
+    def validate_config(self, config: Dict[str, Any]) -> bool:
+        """Валидация конфигурации"""
+        errors = []
+        
+        if not config['package'] or not isinstance(config['package'], str):
+            errors.append("Имя пакета должно быть непустой строкой")
+        
+        if not config['repository']:
+            errors.append("Репозиторий должен быть указан")
+        elif config['test_mode']:
+            if not os.path.exists(config['repository']):
+                errors.append(f"Файл репозитория не найден: {config['repository']}")
+        
+        if config['version'] and not isinstance(config['version'], str):
+            errors.append("Версия должна быть строкой")
+        
+        if config['filter'] is not None and not isinstance(config['filter'], str):
+            errors.append("Фильтр должен быть строкой")
+        
+        if errors:
+            print("Ошибки валидации конфигурации:")
+            for error in errors:
+                print(f"  - {error}")
+            return False
+        
+        return True
+    
+    def print_config(self, config: Dict[str, Any]):
+        """Вывод конфигурации в формате ключ-значение"""
+        print("Конфигурация приложения:")
+        print("-" * 30)
+        for key, value in config.items():
+            print(f"{key}: {value}")
+        print("-" * 30)
+    
+    def run_stage1(self):
+        """Запуск первого этапа"""
+        print("=== Этап 1: Минимальный прототип с конфигурацией ===")
+        
+        try:
+            config = self.parse_arguments()
+            
+            if not self.validate_config(config):
+                sys.exit(1)
+            
+            self.config = config
+            self.print_config(config)
+            
+            print("Этап 1 выполнен успешно!")
+            
+        except Exception as e:
+            print(f"Критическая ошибка: {e}")
+            sys.exit(1)
+    
+    def run_stage2(self):
+        """Запуск второго этапа"""
+        collector = DependencyCollector(self.config)
+        collector.run_stage2()
+
+def main():
+    visualizer = DependencyVisualizer()
+    visualizer.run_stage1()
+    visualizer.run_stage2()
+
+if __name__ == "__main__":
+    main()
+
+
+class DependencyGraph:
+    def __init__(self, collector: 'DependencyCollector'):
+        self.collector = collector
+        self.graph = {}
+        self.visited = set()
+    
+    def build_dependency_tree(self, package: str, depth: int = 0, max_depth: int = 10) -> Dict:
+        """Рекурсивное построение дерева зависимостей"""
+        if depth > max_depth or package in self.visited:
+            return {'name': package, 'children': []}
+        
+        self.visited.add(package)
+        
+        try:
+            dependencies = self.collector.get_package_dependencies(package)
+            children = []
+            
+            for dep in dependencies:
+                child_tree = self.build_dependency_tree(dep, depth + 1, max_depth)
+                children.append(child_tree)
+            
+            return {'name': package, 'children': children}
+            
+        except Exception:
+            return {'name': package, 'children': []}
+    
+    def generate_ascii_tree(self, tree: Dict, prefix: str = "", is_last: bool = True) -> str:
+        """Генерация ASCII-дерева"""
+        if not tree:
+            return ""
+        
+        result = []
+        connector = "└── " if is_last else "├── "
+        result.append(prefix + connector + tree['name'])
+        
+        new_prefix = prefix + ("    " if is_last else "│   ")
+        
+        children = tree['children']
+        for i, child in enumerate(children):
+            is_last_child = i == len(children) - 1
+            result.append(self.generate_ascii_tree(child, new_prefix, is_last_child))
+        
+        return "\n".join(result)
+    
+    def generate_graphviz(self, tree: Dict) -> str:
+        """Генерация кода Graphviz"""
+        nodes = set()
+        edges = set()
+        
+        def traverse(t: Dict, parent: str = None):
+            node_name = t['name'].replace('-', '_').replace('.', '_')
+            nodes.add(node_name)
+            
+            if parent:
+                edges.add(f'"{parent}" -> "{node_name}"')
+            
+            for child in t['children']:
+                traverse(child, node_name)
+        
+        traverse(tree)
+        
+        graphviz_code = [
+            "digraph DependencyTree {",
+            "    rankdir=TB;",
+            "    node [shape=box, style=filled, fillcolor=lightblue];",
+            "    edge [arrowhead=vee];",
+            ""
+        ]
+        
+        # Добавляем узлы
+        for node in nodes:
+            graphviz_code.append(f'    "{node}" [label="{node.replace("_", "-")}"];')
+        
+        graphviz_code.append("")
+        
+        # Добавляем ребра
+        for edge in edges:
+            graphviz_code.append(f"    {edge};")
+        
+        graphviz_code.append("}")
+        
+        return "\n".join(graphviz_code)
+
+class DependencyVisualizer:
+    def __init__(self):
+        self.config = {}
+        
+    def parse_arguments(self) -> Dict[str, Any]:
+        """Парсинг аргументов командной строки"""
+        parser = argparse.ArgumentParser(
+            description='Визуализатор графа зависимостей пакетов Alpine Linux',
+            formatter_class=argparse.RawDescriptionHelpFormatter
+        )
+        
+        parser.add_argument(
+            '--package',
+            type=str,
+            required=True,
+            help='Имя анализируемого пакета'
+        )
+        
+        parser.add_argument(
+            '--repository',
+            type=str,
+            required=True,
+            help='URL-адрес репозитория или путь к файлу тестового репозитория'
+        )
+        
+        parser.add_argument(
+            '--test-mode',
+            action='store_true',
+            help='Режим работы с тестового репозитория'
+        )
+        
+        parser.add_argument(
+            '--version',
+            type=str,
+            default='latest',
+            help='Версия пакета (по умолчанию: latest)'
+        )
+        
+        parser.add_argument(
+            '--ascii-tree',
+            action='store_true',
+            help='Режим вывода зависимостей в формате ASCII-дерева'
+        )
+        
+        parser.add_argument(
+            '--filter',
+            type=str,
+            default='',
+            help='Подстрока для фильтрации пакетов'
+        )
+        
+        parser.add_argument(
+            '--max-depth',
+            type=int,
+            default=3,
+            help='Максимальная глубина рекурсии для построения дерева'
+        )
+        
+        try:
+            args = parser.parse_args()
+            return vars(args)
+        except SystemExit:
+            print("Ошибка: Неправильные аргументы командной строки")
+            sys.exit(1)
+    
+    def validate_config(self, config: Dict[str, Any]) -> bool:
+        """Валидация конфигурации"""
+        errors = []
+        
+        if not config['package'] or not isinstance(config['package'], str):
+            errors.append("Имя пакета должно быть непустой строкой")
+        
+        if not config['repository']:
+            errors.append("Репозиторий должен быть указан")
+        elif config['test_mode']:
+            if not os.path.exists(config['repository']):
+                errors.append(f"Файл репозитория не найден: {config['repository']}")
+        
+        if config['version'] and not isinstance(config['version'], str):
+            errors.append("Версия должна быть строкой")
+        
+        if config['filter'] is not None and not isinstance(config['filter'], str):
+            errors.append("Фильтр должен быть строкой")
+        
+        if config['max_depth'] <= 0:
+            errors.append("Максимальная глубина должна быть положительным числом")
+        
+        if errors:
+            print("Ошибки валидации конфигурации:")
+            for error in errors:
+                print(f"  - {error}")
+            return False
+        
+        return True
+    
+    def print_config(self, config: Dict[str, Any]):
+        """Вывод конфигурации в формате ключ-значение"""
+        print("Конфигурация приложения:")
+        print("-" * 30)
+        for key, value in config.items():
+            print(f"{key}: {value}")
+        print("-" * 30)
+    
+    def run_stage1(self):
+        """Запуск первого этапа"""
+        print("=== Этап 1: Минимальный прототип с конфигурацией ===")
+        
+        try:
+            config = self.parse_arguments()
+            
+            if not self.validate_config(config):
+                sys.exit(1)
+            
+            self.config = config
+            self.print_config(config)
+            
+            print("Этап 1 выполнен успешно!")
+            
+        except Exception as e:
+            print(f"Критическая ошибка: {e}")
+            sys.exit(1)
+    
+    def run_stage2(self):
+        """Запуск второго этапа"""
+        collector = DependencyCollector(self.config)
+        collector.run_stage2()
+        return collector
+    
+    def run_stage5(self, collector: DependencyCollector):
+        """Запуск пятого этапа"""
+        print("\n=== Этап 5: Визуализация ===")
+        
+        try:
+            graph_builder = DependencyGraph(collector)
+            package_name = self.config['package']
+            
+            print(f"Построение дерева зависимостей для {package_name}...")
+            dependency_tree = graph_builder.build_dependency_tree(
+                package_name, 
+                max_depth=self.config['max_depth']
+            )
+            
+            # Генерация Graphviz
+            print("\n1. Описание графа на языке Graphviz:")
+            print("-" * 50)
+            graphviz_code = graph_builder.generate_graphviz(dependency_tree)
+            print(graphviz_code)
+            print("-" * 50)
+            
+            # Сохранение в файл
+            with open(f"{package_name}_dependencies.dot", "w") as f:
+                f.write(graphviz_code)
+            print(f"\nGraphviz код сохранен в {package_name}_dependencies.dot")
+            
+            # ASCII-дерево если запрошено
+            if self.config['ascii_tree']:
+                print("\n2. ASCII-дерево зависимостей:")
+                print("-" * 50)
+                ascii_tree = graph_builder.generate_ascii_tree(dependency_tree)
+                print(ascii_tree)
+                print("-" * 50)
+            
+            # Демонстрация для разных пакетов
+            self.demonstrate_multiple_packages(collector)
+            
+        except Exception as e:
+            print(f"Ошибка на этапе 5: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def demonstrate_multiple_packages(self, collector: DependencyCollector):
+        """Демонстрация для нескольких пакетов"""
+        print("\n3. Примеры визуализации для различных пакетов:")
+        
+        test_packages = [
+            "busybox",
+            "nginx",
+            "python3"
+        ]
+        
+        for pkg in test_packages:
+            print(f"\n--- Пакет: {pkg} ---")
+            try:
+                graph_builder = DependencyGraph(collector)
+                tree = graph_builder.build_dependency_tree(pkg, max_depth=2)
+                
+                # Простая статистика
+                deps = collector.get_package_dependencies(pkg)
+                print(f"Прямые зависимости: {len(deps)}")
+                if deps:
+                    print(f"Примеры: {', '.join(deps[:3])}{'...' if len(deps) > 3 else ''}")
+                
+                # Сравнение с штатными инструментами
+                print("Сравнение: используйте 'apk info -R {pkg}' для проверки")
+                
+            except Exception as e:
+                print(f"Ошибка анализа {pkg}: {e}")
+    
+    def compare_with_native_tools(self, package: str):
+        """Сравнение с штатными инструментами"""
+        print(f"\n4. Сравнение для пакета {package}:")
+        print("Для точного сравнения выполните в системе Alpine Linux:")
+        print(f"  apk info -R {package}")
+        print("\nВозможные расхождения:")
+        print("  - Разные версии пакетов в репозиториях")
+        print("  - Обработка виртуальных пакетов (provides)")
+        print("  - Учет архитектуры и веток репозитория")
+        print("  - Обработка опциональных зависимостей")
+
+def main():
+    visualizer = DependencyVisualizer()
+    visualizer.run_stage1()
+    collector = visualizer.run_stage2()
+    visualizer.run_stage5(collector)
+    visualizer.compare_with_native_tools(visualizer.config['package'])
+
 if __name__ == "__main__":
     main()
 
