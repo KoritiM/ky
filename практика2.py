@@ -1,148 +1,14 @@
 import argparse
 import sys
 import os
-from typing import Dict, Any, List, Optional
-from typing import Dict, List, Set, Tuple
+from typing import Dict, Any, List, Optional, Set, Tuple
 from collections import deque
 import re
 import urllib.request
 import urllib.error
-from typing import Dict, List, Set
 from xml.etree import ElementTree as ET
 import gzip
 import tempfile
-import os
-
-class DependencyVisualizer:
-    def __init__(self):
-        self.config = {}
-        
-    def parse_arguments(self) -> Dict[str, Any]:
-        """Парсинг аргументов командной строки"""
-        parser = argparse.ArgumentParser(
-            description='Визуализатор графа зависимостей пакетов Alpine Linux',
-            formatter_class=argparse.RawDescriptionHelpFormatter
-        )
-        
-        parser.add_argument(
-            '--package',
-            type=str,
-            required=True,
-            help='Имя анализируемого пакета'
-        )
-        
-        parser.add_argument(
-            '--repository',
-            type=str,
-            required=True,
-            help='URL-адрес репозитория или путь к файлу тестового репозитория'
-        )
-        
-        parser.add_argument(
-            '--test-mode',
-            action='store_true',
-            help='Режим работы с тестовым репозиторием'
-        )
-        
-        parser.add_argument(
-            '--version',
-            type=str,
-            default='latest',
-            help='Версия пакета (по умолчанию: latest)'
-        )
-        
-        parser.add_argument(
-            '--ascii-tree',
-            action='store_true',
-            help='Режим вывода зависимостей в формате ASCII-дерева'
-        )
-        
-        parser.add_argument(
-            '--filter',
-            type=str,
-            default='',
-            help='Подстрока для фильтрации пакетов'
-        )
-        
-        try:
-            args = parser.parse_args()
-            return vars(args)
-        except SystemExit:
-            # Обработка ошибок парсинга аргументов
-            print("Ошибка: Неправильные аргументы командной строки")
-            sys.exit(1)
-    
-    def validate_config(self, config: Dict[str, Any]) -> bool:
-        """Валидация конфигурации"""
-        errors = []
-        
-        # Проверка имени пакета
-        if not config['package'] or not isinstance(config['package'], str):
-            errors.append("Имя пакета должно быть непустой строкой")
-        
-        # Проверка репозитория
-        if not config['repository']:
-            errors.append("Репозиторий должен быть указан")
-        elif config['test_mode']:
-            # Проверка существования файла для тестового режима
-            if not os.path.exists(config['repository']):
-                errors.append(f"Файл репозитория не найден: {config['repository']}")
-        
-        # Проверка версии
-        if config['version'] and not isinstance(config['version'], str):
-            errors.append("Версия должна быть строкой")
-        
-        # Проверка фильтра
-        if config['filter'] is not None and not isinstance(config['filter'], str):
-            errors.append("Фильтр должен быть строкой")
-        
-        if errors:
-            print("Ошибки валидации конфигурации:")
-            for error in errors:
-                print(f"  - {error}")
-            return False
-        
-        return True
-    
-    def print_config(self, config: Dict[str, Any]):
-        """Вывод конфигурации в формате ключ-значение"""
-        print("Конфигурация приложения:")
-        print("-" * 30)
-        for key, value in config.items():
-            print(f"{key}: {value}")
-        print("-" * 30)
-    
-    def run_stage1(self):
-        """Запуск первого этапа"""
-        print("=== Этап 1: Минимальный прототип с конфигурацией ===")
-        
-        try:
-            # Парсинг аргументов
-            config = self.parse_arguments()
-            
-            # Валидация конфигурации
-            if not self.validate_config(config):
-                sys.exit(1)
-            
-            # Сохранение конфигурации
-            self.config = config
-            
-            # Вывод конфигурации
-            self.print_config(config)
-            
-            print("Этап 1 выполнен успешно!")
-            
-        except Exception as e:
-            print(f"Критическая ошибка: {e}")
-            sys.exit(1)
-
-def main():
-    visualizer = DependencyVisualizer()
-    visualizer.run_stage1()
-
-if __name__ == "__main__":
-    main()
-
 
 class DependencyCollector:
     def __init__(self, config: Dict[str, Any]):
@@ -271,132 +137,6 @@ class DependencyCollector:
             print(f"Ошибка на этапе 2: {e}")
             sys.exit(1)
 
-# Обновленный основной класс
-class DependencyVisualizer:
-    def __init__(self):
-        self.config = {}
-        
-    def parse_arguments(self) -> Dict[str, Any]:
-        """Парсинг аргументов командной строки"""
-        parser = argparse.ArgumentParser(
-            description='Визуализатор графа зависимостей пакетов Alpine Linux',
-            formatter_class=argparse.RawDescriptionHelpFormatter
-        )
-        
-        parser.add_argument(
-            '--package',
-            type=str,
-            required=True,
-            help='Имя анализируемого пакета'
-        )
-        
-        parser.add_argument(
-            '--repository',
-            type=str,
-            required=True,
-            help='URL-адрес репозитория или путь к файлу тестового репозитория'
-        )
-        
-        parser.add_argument(
-            '--test-mode',
-            action='store_true',
-            help='Режим работы с тестового репозитория'
-        )
-        
-        parser.add_argument(
-            '--version',
-            type=str,
-            default='latest',
-            help='Версия пакета (по умолчанию: latest)'
-        )
-        
-        parser.add_argument(
-            '--ascii-tree',
-            action='store_true',
-            help='Режим вывода зависимостей в формате ASCII-дерева'
-        )
-        
-        parser.add_argument(
-            '--filter',
-            type=str,
-            default='',
-            help='Подстрока для фильтрации пакетов'
-        )
-        
-        try:
-            args = parser.parse_args()
-            return vars(args)
-        except SystemExit:
-            print("Ошибка: Неправильные аргументы командной строки")
-            sys.exit(1)
-    
-    def validate_config(self, config: Dict[str, Any]) -> bool:
-        """Валидация конфигурации"""
-        errors = []
-        
-        if not config['package'] or not isinstance(config['package'], str):
-            errors.append("Имя пакета должно быть непустой строкой")
-        
-        if not config['repository']:
-            errors.append("Репозиторий должен быть указан")
-        elif config['test_mode']:
-            if not os.path.exists(config['repository']):
-                errors.append(f"Файл репозитория не найден: {config['repository']}")
-        
-        if config['version'] and not isinstance(config['version'], str):
-            errors.append("Версия должна быть строкой")
-        
-        if config['filter'] is not None and not isinstance(config['filter'], str):
-            errors.append("Фильтр должен быть строкой")
-        
-        if errors:
-            print("Ошибки валидации конфигурации:")
-            for error in errors:
-                print(f"  - {error}")
-            return False
-        
-        return True
-    
-    def print_config(self, config: Dict[str, Any]):
-        """Вывод конфигурации в формате ключ-значение"""
-        print("Конфигурация приложения:")
-        print("-" * 30)
-        for key, value in config.items():
-            print(f"{key}: {value}")
-        print("-" * 30)
-    
-    def run_stage1(self):
-        """Запуск первого этапа"""
-        print("=== Этап 1: Минимальный прототип с конфигурацией ===")
-        
-        try:
-            config = self.parse_arguments()
-            
-            if not self.validate_config(config):
-                sys.exit(1)
-            
-            self.config = config
-            self.print_config(config)
-            
-            print("Этап 1 выполнен успешно!")
-            
-        except Exception as e:
-            print(f"Критическая ошибка: {e}")
-            sys.exit(1)
-    
-    def run_stage2(self):
-        """Запуск второго этапа"""
-        collector = DependencyCollector(self.config)
-        collector.run_stage2()
-
-def main():
-    visualizer = DependencyVisualizer()
-    visualizer.run_stage1()
-    visualizer.run_stage2()
-
-if __name__ == "__main__":
-    main()
-
 
 class DependencyGraph:
     def __init__(self, collector: 'DependencyCollector'):
@@ -480,6 +220,7 @@ class DependencyGraph:
         graphviz_code.append("}")
         
         return "\n".join(graphviz_code)
+
 
 class DependencyVisualizer:
     def __init__(self):
@@ -690,6 +431,7 @@ class DependencyVisualizer:
         print("  - Учет архитектуры и веток репозитория")
         print("  - Обработка опциональных зависимостей")
 
+
 def main():
     visualizer = DependencyVisualizer()
     visualizer.run_stage1()
@@ -699,4 +441,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
